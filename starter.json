@@ -1,0 +1,21 @@
+{
+  "name": "Tower Stack",
+  "genre": "puzzle",
+  "dim": "2D",
+  "mode": "Versus",
+  "players": "2–4",
+  "hook": "Stack wobbly blocks. First tower over the line wins.",
+  "how": "Falling blocks with real physics: they tip, slide and topple. Build past the gold line and hold it there for two seconds. Every block that falls off costs a life, and spells let you glue your tower or blow wind at your rivals.",
+  "controls": "Arrow keys, Space to drop, E for a spell; or drag to move, tap to turn, flick down to drop",
+  "uses": [
+    ["Live sync", "You watch every rival's tower wobble as they build it."],
+    ["Host-run rounds", "The host's browser runs the match: who is out, the winner and the restart. If it leaves, the next player takes over."],
+    ["Bots", "Bots fill empty seats, read their tower's skyline and stack sensibly."],
+    ["Leaderboard", "Each player's fastest time to the finish line."]
+  ],
+  "ideas": [
+    "Add a spell that shrinks a rival's next piece",
+    "Make the base narrower and the line higher",
+    "Add a survival mode where the line keeps rising"
+  ]
+}

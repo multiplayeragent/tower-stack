@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tower Stack</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #120d2a; }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #f3efff; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; }
+  [hidden] { display: none !important; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 1px 3px #000a; }
+  #net { bottom: max(10px, env(safe-area-inset-bottom)); left: max(12px, env(safe-area-inset-left)); font-size: 12px; opacity: .7; }
+  #hint { left: 0; right: 0; bottom: max(34px, calc(env(safe-area-inset-bottom) + 28px)); text-align: center; font-size: 13px; opacity: .85; padding: 0 90px; }
+  @media (max-aspect-ratio: 1/1) { #hint { padding: 0 16px; font-size: 12px; } }
+  #spell { position: fixed; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); min-width: 64px; min-height: 64px; border-radius: 18px; border: 2px solid #ffffff55;
+    background: radial-gradient(circle at 35% 30%, #b98cff, #5b2fc9); color: #fff; font: 800 13px system-ui, sans-serif; box-shadow: 0 0 22px #a070ffaa; cursor: pointer; padding: 6px 10px; touch-action: none; }
+  #spell b { display: block; font-size: 24px; line-height: 1.1; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #120d2ac0; padding: 16px; }
+  .card { width: min(380px, calc(100vw - 32px)); max-height: 92vh; overflow: auto; box-sizing: border-box; padding: 20px; border-radius: 18px; background: #241b4d; border: 1px solid #ffffff22; text-align: center; box-shadow: 0 20px 60px #0009; }
+  .card h2 { margin: 0 0 6px; font-size: 26px; }
+  .card h3 { margin: 12px 0 0; font-size: 12px; letter-spacing: .1em; color: #b3a5ea; }
+  .card ol { text-align: left; margin: 8px 0; padding-left: 26px; font-size: 14px; } .card li span { float: right; } .card li.me { color: #ffd23f; font-weight: 700; }
+  button.go { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: #ffd23f; color: #241b4d; font: 800 17px system-ui, sans-serif; cursor: pointer; margin-top: 8px; }
+  #oNext { color: #b3a5ea; font-size: 13px; margin-top: 8px; }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="safe" style="position:fixed;top:0;height:0;padding-top:env(safe-area-inset-top);pointer-events:none"></div>
+<div class="hud" id="hint"></div>
+<div class="hud" id="net">Connecting…</div>
+<button id="spell" hidden><b>✨</b><span></span></button>
+<div id="over" hidden><div class="card">
+  <h2 id="oTitle"></h2><ol id="places"></ol>
+  <h3>FASTEST TOWER TO THE LINE</h3><ol id="board"><li>Loading the leaderboard…</li></ol>
+  <button class="go" id="again">Play again</button><div id="oNext"></div>
+</div></div>
+<script>
+/* ═══ TOWER STACK · a Multiplayer Agent starter ═════════════════════════════════════════
+ * Stack falling blocks with real physics. First tower to hold above the gold line wins.
+ * Versus, 2–4 players; bots fill empty seats.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ lane size, the finish line, fall speeds, lives, spells, bots
+ *   PIECES ........ the seven block shapes and their colors
+ *   PHYSICS ....... a small rigid-body solver for boxes (contacts, friction, sleeping)
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host
+ *   TOWER ......... one player's tower: spawning, steering the falling piece, lives, the hold
+ *   SPELLS ........ glue (yours), gust and iron (on your rivals)
+ *   MATCH (HOST) .. countdown, who is out, the winner, the time limit, the restart
+ *   BOTS (HOST) ... a bot looks at its tower's skyline and picks a steady spot
+ *   ME ............ my tower: input, publishing
+ *   DRAW .......... my lane large, rivals small, effects
+ *   SCREENS ....... sound, hint, results, leaderboard, colors
+ *   INPUT ......... keyboard (with key repeat), drag, tap and flick
+ *   MAIN LOOP ..... heartbeat, host tick, my tick, draw
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - Every tower is simulated by ONE browser: yours by you, the bots' by the host. Nobody
+ *     else runs your physics; they draw the snapshot you publish.
+ *   - Your tower is your OWN entity field `t` = {m, b, l, p, k, s, h, g, w, a, wd, ir}: match
+ *     id, the blocks [id, shape, x, y, angle (×100), flags], lives, pieces placed, pieces
+ *     dealt, spell held, height (×100), hold progress, when you won, alive, wind, iron next.
+ *     ~11 times a second. Also `n` (name), `c` (color) and `hb` (heartbeat).
+ *   - The HOST (lowest live sessionId) runs the match in ONE shared field, `match`: {id, v,
+ *     ph, seed, startAt, raceEnd, players, bots, out, winner, endsAt, ready}. It reads every
+ *     tower, marks who lost all lives and calls the winner. Each bot's tower lives in a shared
+ *     field `bot1` … `bot4` (same shape as `t`); a new host rebuilds the bots from them.
+ *   - Spells are events: "spell" {k, f, m, d}. Each player applies a gust or iron to its OWN
+ *     tower when it hears one; the host applies them to its bots.
+ *   - Everyone gets the same pieces in the same order: 7-piece bags shuffled from match.seed.
+ *   - ?attract plays offline with bots only (the preview video is recorded from it).
+ *   - Leaderboard "fast-tower": your fastest time to the finish line.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  seats: 4,             // bots fill the match up to this many towers (2–4)
+  laneHalf: 7,          // a lane is 14 cells wide (x from -7 to 7)
+  baseHalf: 3,          // the stone base is 6 cells wide: blocks past its edge fall off
+  viewBottom: -3.5, viewTop: 19, // the part of the lane on screen, in cells (the base top is 0)
+  finishY: 13,          // the gold finish line, in cells above the base
+  holdMs: 2000,         // your tower must stay above the line this long to win
+  spawnY: 17,           // new pieces appear this high
+  fallSpeed: 2.4,       // cells per second a piece floats down…
+  softSpeed: 6.5,       // …while you hold down…
+  dropSpeed: 14,        // …after you drop it…
+  landSpeed: 4.5,       // …slowing to this just above the tower, so drops don't smash it
+  nextDelayMs: 450,     // the next piece comes this long after one lands
+  lives: 3,             // a block falling off costs a life; 0 lives = out
+  collapseMs: 1500,     // more blocks falling within this long count as the same collapse (one life)
+  lostY: -4,            // a block below this has fallen off
+  raceMs: 180000,       // after 3 minutes the tallest tower wins
+  countdownMs: 3000,    // 3, 2, 1, go
+  overMs: 9000,         // the results screen
+  spellEvery: 3,        // every 3rd piece you land charges a spell (you hold one at a time)
+  windMs: 3200,         // a gust blows this long…
+  windForce: 2.6,        // …this hard
+  ironDens: 3.5,        // an iron piece is this many times heavier
+  publishMs: 90,        // my tower snapshot at most this often
+  botThinkMs: 1500,     // a bot looks at a new piece this long before moving it
+  botTrials: 5,         // a bot test-drops its best few spots on a copy of its tower before choosing
+  botMistake: 0.22,     // chance a bot settles for a worse spot
+  botCastMs: [1500, 5000], // a bot casts a held spell after this long
+  das: 170, arr: 60,    // key repeat: delay before it starts, then ms per step
+  board: "fast-tower",  // leaderboard name
+};
+const BOT_NAMES = ["Merla", "Gandolf", "Hexa", "Wizbit", "Prisma", "Runa", "Bramble", "Stackwell"];
+const COLORS = ["#ffd23f", "#4cc9f0", "#f72585", "#80ed99", "#ff9f1c", "#b388ff", "#ff6b6b", "#00f5d4"];
+const SPELLS = { glue: { icon: "🌿", name: "Glue", say: "glued their tower" }, gust: { icon: "🌬️", name: "Gust", say: "sent a gust" }, iron: { icon: "⚙️", name: "Iron", say: "made your next piece iron" } };
+
+// ── PIECES ──────────────────────────────────────────────────────────────────────────
+// Each shape is a few rectangles [x, y, w, h] in cells (y up). Physics treats it as one body.
+const PIECES = {
+  I: { rects: [[0, 0, 4, 1]], color: "#38d6f5" },
+  O: { rects: [[0, 0, 2, 2]], color: "#ffd23f" },
+  T: { rects: [[0, 0, 3, 1], [1, 1, 1, 1]], color: "#b467ff" },
+  S: { rects: [[0, 0, 2, 1], [1, 1, 2, 1]], color: "#4ee08a" },
+  Z: { rects: [[1, 0, 2, 1], [0, 1, 2, 1]], color: "#ff5a6e" },
+  J: { rects: [[0, 0, 3, 1], [0, 1, 1, 1]], color: "#4c7dff" },
+  L: { rects: [[0, 0, 3, 1], [2, 1, 1, 1]], color: "#ff9f1c" },
+};
+/** A shape's boxes around its center of mass, its area, inertia per unit density and radius. */
+function shapeGeom(rects) {
+  let area = 0, cx = 0, cy = 0, I = 0;
+  for (const [x, y, w, h] of rects) { area += w * h; cx += (x + w / 2) * w * h; cy += (y + h / 2) * w * h; }
+  cx /= area; cy /= area;
+  const boxes = rects.map(([x, y, w, h]) => { const ox = x + w / 2 - cx, oy = y + h / 2 - cy; I += w * h * ((w * w + h * h) / 12 + ox * ox + oy * oy); return { ox, oy, hx: w / 2, hy: h / 2 }; });
+  return { boxes, area, I, rad: Math.max(...boxes.map((b) => Math.hypot(Math.abs(b.ox) + b.hx, Math.abs(b.oy) + b.hy))) };
+}
+const GEOM = Object.fromEntries(Object.entries(PIECES).map(([k, p]) => [k, shapeGeom(p.rects)]));
+const BASE_GEOM = shapeGeom([[0, 0, CONFIG.baseHalf * 2, 3]]);
+
+// ── PHYSICS ─────────────────────────────────────────────────────────────────────────
+// In the style of Box2D Lite: box-vs-box contacts with clipping, sequential impulses with
+// warm starting (impulses carry over between steps, which keeps stacks steady), and sleeping
+// so a settled tower stays put. 1 unit = 1 cell, y up.
+const PHYS = { gravity: -13, iterations: 12, step: 1 / 60, friction: 0.65, sleepV: 0.07, sleepS: 0.45, wakeV: 0.25, slop: 0.01, bias: 0.2 };
+const newWorld = () => ({ bodies: [], arbs: new Map(), nextId: 1, time: 0, acc: 0, windX: 0, windUntil: 0 });
+function addBody(W, geom, x, y, a, opts = {}) {
+  const dens = opts.dens || 1;
+  const b = { id: opts.id || W.nextId++, x, y, a, vx: 0, vy: 0, w: 0, geom, dens, boxes: geom.boxes, rad: geom.rad, invM: opts.stat ? 0 : 1 / (geom.area * dens), invI: opts.stat ? 0 : 1 / (geom.I * dens),
+    im: 0, ii: 0, stat: !!opts.stat, ctl: false, glued: false, sleep: false, slow: 0, fr: PHYS.friction, ...opts.extra };
+  W.nextId = Math.max(W.nextId, b.id + 1);
+  W.bodies.push(b);
+  return b;
+}
+const fixedBody = (b) => b.stat || b.glued || b.sleep;
+const bodySpeed = (b) => Math.hypot(b.vx, b.vy) + Math.abs(b.w) * b.rad;
+function worldBoxes(b) {
+  const c = Math.cos(b.a), s = Math.sin(b.a);
+  return b.boxes.map((q) => ({ x: b.x + c * q.ox - s * q.oy, y: b.y + s * q.ox + c * q.oy, c, s, hx: q.hx, hy: q.hy }));
+}
+function incidentEdge(hx, hy, px, py, c, s, nx, ny) {
+  const lx = -(c * nx + s * ny), ly = -(-s * nx + c * ny);
+  const v = Math.abs(lx) > Math.abs(ly)
+    ? (lx > 0 ? [[hx, -hy, 3, 4], [hx, hy, 4, 1]] : [[-hx, hy, 1, 2], [-hx, -hy, 2, 3]])
+    : (ly > 0 ? [[hx, hy, 4, 1], [-hx, hy, 1, 2]] : [[-hx, -hy, 2, 3], [hx, -hy, 3, 4]]);
+  return v.map(([x, y, i2, o2]) => ({ x: px + c * x - s * y, y: py + s * x + c * y, i1: 0, o1: 0, i2, o2 }));
+}
+function clipSeg(vin, nx, ny, off, edge) {
+  const out = [], d0 = nx * vin[0].x + ny * vin[0].y - off, d1 = nx * vin[1].x + ny * vin[1].y - off;
+  if (d0 <= 0) out.push(vin[0]);
+  if (d1 <= 0) out.push(vin[1]);
+  if (d0 * d1 < 0) {
+    const t = d0 / (d0 - d1), v = { ...(d0 > 0 ? vin[0] : vin[1]), x: vin[0].x + t * (vin[1].x - vin[0].x), y: vin[0].y + t * (vin[1].y - vin[0].y) };
+    if (d0 > 0) { v.i1 = edge; v.i2 = 0; } else { v.o1 = edge; v.o2 = 0; }
+    out.push(v);
+  }
+  return out;
+}
+/** Box A vs box B (world space): up to 2 contacts {x, y, nx, ny, sep, key}, normal A → B. */
+function collideBoxes(A, B, out, keyBase) {
+  const dpx = B.x - A.x, dpy = B.y - A.y;
+  const dAx = A.c * dpx + A.s * dpy, dAy = -A.s * dpx + A.c * dpy, dBx = B.c * dpx + B.s * dpy, dBy = -B.s * dpx + B.c * dpy;
+  const a00 = Math.abs(A.c * B.c + A.s * B.s), a01 = Math.abs(A.s * B.c - A.c * B.s), a10 = a01, a11 = a00;
+  const faX = Math.abs(dAx) - A.hx - (a00 * B.hx + a01 * B.hy), faY = Math.abs(dAy) - A.hy - (a10 * B.hx + a11 * B.hy);
+  if (faX > 0 || faY > 0) return;
+  const fbX = Math.abs(dBx) - (a00 * A.hx + a10 * A.hy) - B.hx, fbY = Math.abs(dBy) - (a01 * A.hx + a11 * A.hy) - B.hy;
+  if (fbX > 0 || fbY > 0) return;
+  let axis = 0, sep = faX, nx = dAx > 0 ? A.c : -A.c, ny = dAx > 0 ? A.s : -A.s;
+  if (faY > 0.95 * sep + 0.01 * A.hy) { axis = 1; sep = faY; nx = dAy > 0 ? -A.s : A.s; ny = dAy > 0 ? A.c : -A.c; }
+  if (fbX > 0.95 * sep + 0.01 * B.hx) { axis = 2; sep = fbX; nx = dBx > 0 ? B.c : -B.c; ny = dBx > 0 ? B.s : -B.s; }
+  if (fbY > 0.95 * sep + 0.01 * B.hy) { axis = 3; sep = fbY; nx = dBy > 0 ? -B.s : B.s; ny = dBy > 0 ? B.c : -B.c; }
+  const ref = axis < 2 ? A : B, inc = axis < 2 ? B : A, fnx = axis < 2 ? nx : -nx, fny = axis < 2 ? ny : -ny, alongX = axis === 0 || axis === 2;
+  const front = ref.x * fnx + ref.y * fny + (alongX ? ref.hx : ref.hy);
+  const snx = alongX ? -ref.s : ref.c, sny = alongX ? ref.c : ref.s, side = ref.x * snx + ref.y * sny, half = alongX ? ref.hy : ref.hx;
+  let cp = clipSeg(incidentEdge(inc.hx, inc.hy, inc.x, inc.y, inc.c, inc.s, fnx, fny), -snx, -sny, -side + half, alongX ? 3 : 2);
+  if (cp.length < 2) return;
+  cp = clipSeg(cp, snx, sny, side + half, alongX ? 1 : 4);
+  if (cp.length < 2) return;
+  for (const v of cp) {
+    const s = fnx * v.x + fny * v.y - front;
+    if (s > 0) continue;
+    const f = axis < 2 ? [v.i1, v.o1, v.i2, v.o2] : [v.i2, v.o2, v.i1, v.o1];
+    out.push({ x: v.x - s * fnx, y: v.y - s * fny, nx, ny, sep: s, key: keyBase * 4096 + f[0] + f[1] * 8 + f[2] * 64 + f[3] * 512, pn: 0, pt: 0 });
+  }
+}
+/** Find touching pairs, wake sleepers that get hit, and release the steered piece when it touches down. */
+function broadPhase(W, events) {
+  const B = W.bodies, next = new Map(), wb = new Map(B.map((b) => [b, worldBoxes(b)]));
+  for (let i = 0; i < B.length; i++) for (let j = i + 1; j < B.length; j++) {
+    let p = B[i], q = B[j];
+    if (p.id > q.id) [p, q] = [q, p];
+    const key = p.id * 65536 + q.id;
+    if (fixedBody(p) && fixedBody(q)) { if (W.arbs.has(key)) next.set(key, W.arbs.get(key)); continue; }
+    const dx = q.x - p.x, dy = q.y - p.y, rr = p.rad + q.rad + 0.05;
+    if (dx * dx + dy * dy > rr * rr) continue;
+    const cs = [], bp = wb.get(p), bq = wb.get(q);
+    for (let u = 0; u < bp.length; u++) for (let v = 0; v < bq.length; v++) collideBoxes(bp[u], bq[v], cs, u * 8 + v);
+    if (!cs.length) continue;
+    const old = W.arbs.get(key);
+    if (old) for (const c of cs) { const o = old.cs.find((k) => k.key === c.key); if (o) { c.pn = o.pn; c.pt = o.pt; } }
+    next.set(key, { a: p, b: q, cs, fr: Math.sqrt(p.fr * q.fr) });
+    for (const [s, o] of [[p, q], [q, p]]) {
+      if (s.sleep && !fixedBody(o) && bodySpeed(o) > PHYS.wakeV) { s.sleep = false; s.slow = 0; }
+      if (s.ctl && !o.ctl) { s.ctl = false; events.push({ k: "land", b: s, v: bodySpeed(s), x: cs[0].x, y: cs[0].y }); }
+    }
+  }
+  W.arbs = next;
+}
+/** One fixed step. Returns events ({k: "land"} when the steered piece touches down). */
+function stepWorld(W, dt) {
+  const events = [];
+  W.time += dt;
+  broadPhase(W, events);
+  const windOn = W.time < W.windUntil;
+  for (const b of W.bodies) {
+    const fixed = fixedBody(b);
+    b.im = fixed ? 0 : b.invM; b.ii = fixed ? 0 : b.invI;
+    if (fixed) continue;
+    if (b.ctl) { // the falling piece is steered: it slides to its target spot and turn, at its fall speed
+      const da = Math.atan2(Math.sin(b.ta - b.a), Math.cos(b.ta - b.a));
+      b.vx = Math.max(-9, Math.min(9, (b.tx - b.x) * 14)); b.vy = -b.fall; b.w = Math.max(-9, Math.min(9, da * 16));
+      continue;
+    }
+    b.vy += PHYS.gravity * dt;
+    if (windOn) b.vx += W.windX * dt * Math.min(1, b.invM * 4);
+    b.vx /= 1 + dt * 0.08; b.vy /= 1 + dt * 0.08; b.w /= 1 + dt * 0.9;
+  }
+  const arbs = [...W.arbs.values()].filter((A) => A.a.im || A.b.im);
+  for (const A of arbs) preStep(A, 1 / dt);
+  for (let it = 0; it < (W.iters || PHYS.iterations); it++) for (const A of arbs) applyImpulse(A);
+  for (const b of W.bodies) {
+    if (fixedBody(b)) continue;
+    b.x += b.vx * dt; b.y += b.vy * dt; b.a += b.w * dt;
+    if (b.ctl || windOn) { b.slow = 0; continue; }
+    if (Math.hypot(b.vx, b.vy) < PHYS.sleepV && Math.abs(b.w) < PHYS.sleepV) { b.slow += dt; if (b.slow > PHYS.sleepS) { b.sleep = true; b.vx = b.vy = b.w = 0; } } else b.slow = 0;
+  }
+  return events;
+}
+function preStep(A, invDt) {
+  const p = A.a, q = A.b;
+  for (const c of A.cs) {
+    const r1x = c.x - p.x, r1y = c.y - p.y, r2x = c.x - q.x, r2y = c.y - q.y, rn1 = r1x * c.nx + r1y * c.ny, rn2 = r2x * c.nx + r2y * c.ny;
+    c.mn = 1 / (p.im + q.im + p.ii * (r1x * r1x + r1y * r1y - rn1 * rn1) + q.ii * (r2x * r2x + r2y * r2y - rn2 * rn2));
+    const tx = c.ny, ty = -c.nx, rt1 = r1x * tx + r1y * ty, rt2 = r2x * tx + r2y * ty;
+    c.mt = 1 / (p.im + q.im + p.ii * (r1x * r1x + r1y * r1y - rt1 * rt1) + q.ii * (r2x * r2x + r2y * r2y - rt2 * rt2));
+    c.bias = -PHYS.bias * invDt * Math.min(0, c.sep + PHYS.slop);
+    const Px = c.pn * c.nx + c.pt * tx, Py = c.pn * c.ny + c.pt * ty; // warm start: last step's impulse
+    p.vx -= p.im * Px; p.vy -= p.im * Py; p.w -= p.ii * (r1x * Py - r1y * Px);
+    q.vx += q.im * Px; q.vy += q.im * Py; q.w += q.ii * (r2x * Py - r2y * Px);
+  }
+}
+function applyImpulse(A) {
+  const p = A.a, q = A.b;
+  for (const c of A.cs) {
+    const r1x = c.x - p.x, r1y = c.y - p.y, r2x = c.x - q.x, r2y = c.y - q.y;
+    let dvx = q.vx - q.w * r2y - p.vx + p.w * r1y, dvy = q.vy + q.w * r2x - p.vy - p.w * r1x;
+    let dPn = c.mn * (-(dvx * c.nx + dvy * c.ny) + c.bias);
+    const pn0 = c.pn; c.pn = Math.max(pn0 + dPn, 0); dPn = c.pn - pn0;
+    let Px = dPn * c.nx, Py = dPn * c.ny;
+    p.vx -= p.im * Px; p.vy -= p.im * Py; p.w -= p.ii * (r1x * Py - r1y * Px);
+    q.vx += q.im * Px; q.vy += q.im * Py; q.w += q.ii * (r2x * Py - r2y * Px);
+    dvx = q.vx - q.w * r2y - p.vx + p.w * r1y; dvy = q.vy + q.w * r2x - p.vy - p.w * r1x;
+    const tx = c.ny, ty = -c.nx, maxPt = A.fr * c.pn, pt0 = c.pt;
+    c.pt = Math.max(-maxPt, Math.min(maxPt, pt0 + c.mt * -(dvx * tx + dvy * ty)));
+    Px = (c.pt - pt0) * tx; Py = (c.pt - pt0) * ty;
+    p.vx -= p.im * Px; p.vy -= p.im * Py; p.w -= p.ii * (r1x * Py - r1y * Px);
+    q.vx += q.im * Px; q.vy += q.im * Py; q.w += q.ii * (r2x * Py - r2y * Px);
+  }
+}
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'tower-stack',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true,
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+const memo = new Map();
+/** A JSON field (shared or a player's), parsed once per change. Read-only. */
+function cached(key, raw, fb) { const m = memo.get(key); if (m && m.raw === raw) return m.v; const v = parse(raw, fb); memo.set(key, { raw, v }); return v; }
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map();
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+let hostHold = 0, lastTick = performance.now(); // lastTick: when frame() last ran; hostHold: after a freeze, no hosting before this time (see frame())
+const isHost = () => performance.now() > hostHold && performance.now() - lastTick < 1000 && livePlayers()[0] === net.sessionId; // a tab whose loop has stopped doesn't host
+const humans = () => livePlayers().filter((id) => !(ATTRACT && id === net.sessionId));
+
+// ── TOWER ───────────────────────────────────────────────────────────────────────────
+function mulberry32(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const seqs = new Map();
+/** Piece number k of a match: 7-piece bags shuffled from the seed, the same for every tower. */
+function pieceAt(seed, k) {
+  let s = seqs.get(seed);
+  if (!s) { s = { r: mulberry32(seed), list: [] }; seqs.set(seed, s); }
+  while (s.list.length <= k) { const bag = Object.keys(PIECES); for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(s.r() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; } s.list.push(...bag); }
+  return s.list[k];
+}
+function newTower(seed) {
+  const W = newWorld();
+  addBody(W, BASE_GEOM, 0, -1.5, 0, { stat: true, extra: { t: "base" } });
+  return { W, seed, k: 0, cur: null, nextAt: 0.3, lives: CONFIG.lives, lostAt: -9, placed: 0, spell: "", hold: 0, wonAt: 0, alive: true, iron: 0, drop: false, soft: false, height: 0, plan: null, spots: null, tried: 0, thinkAt: 0, castAt: 0 };
+}
+/** Tops of the settled blocks as [x0, x1, top] boxes (the base included): the tower's skyline. */
+function skyline(T) {
+  const out = [[-CONFIG.baseHalf, CONFIG.baseHalf, 0]];
+  for (const b of T.W.bodies) {
+    if (b.stat || b === T.cur || bodySpeed(b) > 1.2) continue;
+    for (const q of worldBoxes(b)) { const ex = Math.abs(q.c) * q.hx + Math.abs(q.s) * q.hy, ey = Math.abs(q.s) * q.hx + Math.abs(q.c) * q.hy; out.push([q.x - ex, q.x + ex, q.y + ey]); }
+  }
+  return out;
+}
+const topAt = (sky, x0, x1) => { let t = -Infinity; for (const [a, b, y] of sky) if (b > x0 + 0.02 && a < x1 - 0.02 && y > t) t = y; return t; };
+const towerHeight = (sky) => Math.max(0, ...sky.map((s) => s[2]));
+function spawnPiece(T) {
+  const t = pieceAt(T.seed, T.k++), iron = !!T.iron;
+  T.iron = 0;
+  const b = addBody(T.W, GEOM[t], 0, Math.max(CONFIG.spawnY, T.height + 3), 0, { dens: iron ? CONFIG.ironDens : 1, extra: { t, iron } });
+  Object.assign(b, { ctl: true, tx: 0, ta: 0, fall: CONFIG.fallSpeed });
+  T.cur = b; T.drop = false; T.soft = false; T.plan = null; T.spots = null;
+}
+/** The steered piece's fall speed: slow, faster while held down, fast after a drop (easing off just above the tower). */
+function steerPiece(T, sky) {
+  const b = T.cur;
+  b.fall = T.drop ? CONFIG.dropSpeed : T.soft ? CONFIG.softSpeed : CONFIG.fallSpeed;
+  if (b.fall <= CONFIG.fallSpeed) return;
+  let gap = Infinity;
+  for (const q of worldBoxes(b)) { const ex = Math.abs(q.c) * q.hx + Math.abs(q.s) * q.hy, ey = Math.abs(q.s) * q.hx + Math.abs(q.c) * q.hy; gap = Math.min(gap, q.y - ey - topAt(sky, q.x - ex, q.x + ex)); }
+  if (gap < 1.6) b.fall = T.gentle ? CONFIG.fallSpeed : Math.min(b.fall, CONFIG.landSpeed); // bots set pieces down gently
+}
+/**
+ * Advance one tower by dt seconds. `play` = pieces keep coming and losses count.
+ * Returns effects: {k: "land"|"lost"|"won"|"charged", ...} for sounds and particles.
+ */
+function towerTick(T, dt, play) {
+  const fx = [], W = T.W;
+  if (play && T.alive && !T.wonAt && !T.cur && W.time >= T.nextAt) spawnPiece(T);
+  W.acc = Math.min(W.acc + dt, PHYS.step * 4);
+  let sky = null;
+  while (W.acc >= PHYS.step) {
+    W.acc -= PHYS.step;
+    if (T.cur && T.cur.ctl) {
+      sky = skyline(T); steerPiece(T, sky);
+      if (W.time < W.windUntil) T.cur.tx = Math.max(-CONFIG.laneHalf + 1, Math.min(CONFIG.laneHalf - 1, T.cur.tx + W.windX * PHYS.step * 0.12));
+      if (T.cur.y < -0.6) { T.cur.ctl = false; T.cur = null; T.nextAt = W.time + CONFIG.nextDelayMs / 1000; } // steered past the base edge: it just falls
+    }
+    for (const e of stepWorld(W, PHYS.step)) {
+      if (e.b !== T.cur) continue;
+      T.cur = null; T.placed++; T.nextAt = W.time + CONFIG.nextDelayMs / 1000;
+      fx.push({ k: "land", x: e.x, y: e.y, v: e.v, iron: e.b.iron });
+      if (play && T.placed % CONFIG.spellEvery === 0 && !T.spell) { T.spell = Object.keys(SPELLS)[Math.floor(Math.random() * 3)]; fx.push({ k: "charged", s: T.spell }); }
+    }
+  }
+  for (let i = W.bodies.length - 1; i >= 0; i--) {
+    const b = W.bodies[i];
+    if (b.stat || b.y > CONFIG.lostY) continue;
+    W.bodies.splice(i, 1);
+    if (b === T.cur) { T.cur = null; T.nextAt = W.time + CONFIG.nextDelayMs / 1000; }
+    if (!play || !T.alive) continue;
+    fx.push({ k: "lost", x: b.x });
+    if (W.time - T.lostAt < CONFIG.collapseMs / 1000) continue; // one collapse costs one life, however many blocks go
+    T.lives--; T.lostAt = W.time;
+    if (T.lives <= 0) { T.alive = false; if (T.cur) T.cur.ctl = false; T.cur = null; }
+  }
+  T.height = towerHeight(skyline(T));
+  if (play && T.alive && !T.wonAt && T.height >= CONFIG.finishY) T.hold += dt; else if (!T.wonAt) T.hold = 0;
+  if (play && T.alive && !T.wonAt && T.hold * 1000 >= CONFIG.holdMs) { T.wonAt = Date.now(); fx.push({ k: "won" }); }
+  return fx;
+}
+const windOn = (T) => T.W.time < T.W.windUntil;
+/** A tower as it goes on the wire: one short JSON string. */
+function packTower(T, m) {
+  const b = [];
+  for (const q of T.W.bodies) if (!q.stat) b.push([q.id, q.t, Math.round(q.x * 100), Math.round(q.y * 100), Math.round(Math.atan2(Math.sin(q.a), Math.cos(q.a)) * 100), (q.ctl ? 1 : 0) | (q.glued ? 2 : 0) | (q.iron ? 4 : 0) | (q.sleep ? 0 : 8)]);
+  return JSON.stringify({ m, b, l: T.lives, p: T.placed, k: T.k, s: T.spell, h: Math.round(T.height * 100), g: Math.round(Math.min(1, T.hold * 1000 / CONFIG.holdMs) * 100), w: T.wonAt, a: T.alive ? 1 : 0, wd: windOn(T) ? Math.sign(T.W.windX) : 0, ir: T.iron });
+}
+/** Rebuild a live tower from its snapshot (a new host takes the bots over this way). */
+function towerFromSnap(v, seed) {
+  const T = newTower(seed);
+  for (const [id, t, x, y, a, f] of v.b || []) {
+    if (!GEOM[t]) continue;
+    const b = addBody(T.W, GEOM[t], x / 100, y / 100, a / 100, { id, dens: f & 4 ? CONFIG.ironDens : 1, extra: { t, iron: !!(f & 4) } });
+    b.glued = !!(f & 2); b.sleep = !(f & 8) && !(f & 1);
+    if (f & 1) { Object.assign(b, { ctl: true, tx: b.x, ta: Math.round(b.a / (Math.PI / 2)) * (Math.PI / 2), fall: CONFIG.fallSpeed }); T.cur = b; }
+  }
+  Object.assign(T, { k: v.k || 0, lives: v.l ?? CONFIG.lives, placed: v.p || 0, spell: v.s || "", alive: v.a !== 0, wonAt: v.w || 0, iron: v.ir || 0, hold: ((v.g || 0) / 100) * CONFIG.holdMs / 1000 });
+  return T;
+}
+
+// ── SPELLS ──────────────────────────────────────────────────────────────────────────
+/** A gust or iron hits one tower (mine, or a bot's on the host). Glue only ever hits its caster. */
+function spellHits(T, k, d) {
+  if (!T || !T.alive) return;
+  if (k === "gust") { T.W.windX = d * CONFIG.windForce; T.W.windUntil = T.W.time + CONFIG.windMs / 1000; for (const b of T.W.bodies) { b.sleep = false; b.slow = 0; } }
+  if (k === "iron") T.iron = 1;
+}
+function glueTower(T) { for (const b of T.W.bodies) if (!b.stat && b !== T.cur && b.y > 0 && bodySpeed(b) < 0.6) { b.glued = true; b.vx = b.vy = b.w = 0; } } // only blocks at rest: a falling one stays falling
+/** `from` casts its held spell. Runs where `from`'s tower lives (my tab, or the host for a bot). */
+function cast(m, from, T) {
+  const k = T.spell;
+  if (!k || !m || m.ph !== "play") return;
+  T.spell = "";
+  const d = Math.random() < 0.5 ? -1 : 1;
+  if (k === "glue") glueTower(T);
+  spellLanded(m, { k, f: from, m: m.id, d });
+  net.send("spell", { k, f: from, m: m.id, d });
+}
+/** Everyone runs this for every spell: hit my tower (and, as host, the bots'), show the banner. */
+function spellLanded(m, msg) {
+  if (!m || msg.m !== m.id || !SPELLS[msg.k]) return;
+  if (msg.k !== "glue") {
+    if (msg.f !== net.sessionId && me.m === m.id) spellHits(me.T, msg.k, msg.d);
+    if (isHost()) for (const [id, bot] of host.bots) if (id !== msg.f) spellHits(bot.T, msg.k, msg.d);
+  }
+  const who = msg.f === net.sessionId ? "You" : nameOf(m, msg.f);
+  fx.banner = { text: `${SPELLS[msg.k].icon} ${who} ${msg.f === net.sessionId ? SPELLS[msg.k].say.replace("their", "your").replace("your next piece", "rivals' next piece") : SPELLS[msg.k].say}`, at: performance.now() };
+  fx.glow.set(msg.f, performance.now());
+  tone(msg.k === "gust" ? 300 : msg.k === "iron" ? 140 : 620, 380, msg.k === "iron" ? "square" : "triangle", 0.04);
+}
+
+// ── MATCH (HOST) ────────────────────────────────────────────────────────────────────
+const host = { last: null, was: false, bots: new Map(), raws: {}, lastBots: 0 };
+function match() {
+  const m = parse(S.shared.match, null);
+  return host.last && isHost() && (!m || host.last.v > m.v) ? host.last : m;
+}
+function writeMatch(m) { m = { ...m, v: (match()?.v ?? 0) + 1 }; host.last = m; net.setShared("match", JSON.stringify(m)); return m; }
+const nameOf = (m, id) => (id === net.sessionId ? myName : m?.bots.find((b) => b.i === id)?.n) || String(S.entities.players?.[id]?.n ?? "Player").slice(0, 12);
+const colorOf = (m, id) => (id === net.sessionId ? myColor : m?.bots.find((b) => b.i === id)?.c) || S.entities.players?.[id]?.c || "#aaa";
+const isBot = (m, id) => !!m && m.bots.some((b) => b.i === id);
+
+function newMatch(id) {
+  const hs = humans().slice(0, 4), used = new Set(hs.map((h) => colorOf(null, h))), free = COLORS.filter((c) => !used.has(c)), names = [...BOT_NAMES].sort(() => Math.random() - 0.5);
+  const bots = Array.from({ length: Math.max(hs.length ? 0 : 1, CONFIG.seats - hs.length) }, (_, k) => ({ i: "bot" + (k + 1), n: names[k], c: free[k % free.length] }));
+  const seed = (Math.random() * 1e9) | 0, startAt = Date.now() + CONFIG.countdownMs;
+  host.bots = new Map(bots.map((b, k) => [b.i, { T: newTower(seed), skill: k }]));
+  return { id, ph: "count", seed, startAt, raceEnd: startAt + CONFIG.raceMs, players: [...hs, ...bots.map((b) => b.i)], bots, out: [], winner: "", endsAt: 0, ready: [] };
+}
+/** Become host: take the bots' towers over exactly as state has them. */
+function adopt() {
+  host.was = true; host.last = null; host.bots = new Map();
+  const m = match();
+  if (!m) return;
+  m.bots.forEach((b, k) => { const v = cached(b.i, S.shared[b.i], null); host.bots.set(b.i, { T: v && v.m === m.id ? towerFromSnap(v, m.seed) : newTower(m.seed), skill: k }); });
+}
+function hostTick(now, dt) {
+  if (!host.was) adopt();
+  let m = match();
+  if (!m) m = writeMatch(newMatch(1));
+  if (m.ph === "count" && now >= m.startAt) m = writeMatch({ ...m, ph: "play" });
+  botsTick(m, dt);
+  if (m.ph === "play") checkOuts(match(), now);
+  else if (m.ph === "over" && now >= m.endsAt) writeMatch(newMatch(m.id + 1));
+  writeBots();
+}
+/** What the host knows of one tower: {m, a, w, h} from its own sims or the player's snapshot. */
+function towerInfo(m, id) {
+  const T = id === net.sessionId ? (me.m === m.id ? me.T : null) : host.bots.get(id)?.T;
+  if (T) return { m: m.id, a: T.alive ? 1 : 0, w: T.wonAt, h: Math.round(T.height * 100) };
+  return cached("t:" + id, S.entities.players?.[id]?.t, null);
+}
+/** Out = lost every life or left. First to hold above the line wins; else the last tower standing; else the tallest at the buzzer. */
+function checkOuts(m, now) {
+  const live = new Set(livePlayers()), gone = [], claims = [];
+  for (const id of m.players) {
+    if (m.out.includes(id)) continue;
+    const v = towerInfo(m, id), current = v && v.m === m.id;
+    if (!isBot(m, id) && id !== net.sessionId && !live.has(id)) gone.push(id); // left, or frozen with no heartbeat for 3s
+    else if (current && v.w) claims.push([id, v.w]);
+    else if (current && !v.a) gone.push(id);
+  }
+  const out = [...m.out, ...gone], alive = m.players.filter((id) => !out.includes(id));
+  const over = (winner) => writeMatch({ ...m, out, ph: "over", winner, endsAt: now + CONFIG.overMs, ready: [] });
+  if (claims.length) return over(claims.sort((a, b) => a[1] - b[1])[0][0]);
+  if (alive.length <= (m.players.length > 1 ? 1 : 0)) return over(alive[0] || "");
+  if (now >= m.raceEnd) {
+    const hs = alive.map((id) => [id, towerInfo(m, id)?.h || 0]).sort((a, b) => b[1] - a[1]);
+    return over(hs.length && (hs.length === 1 || hs[0][1] > hs[1][1]) ? hs[0][0] : ""); // a tie is a draw
+  }
+  if (gone.length) writeMatch({ ...m, out });
+}
+function onReady(from) {
+  const m = match();
+  if (!m || m.ph !== "over" || m.ready.includes(from)) return;
+  const ready = [...m.ready, from];
+  writeMatch({ ...m, ready, endsAt: humans().every((id) => ready.includes(id)) ? Math.min(m.endsAt, Date.now() + 1200) : m.endsAt });
+}
+
+// ── BOTS (HOST) ─────────────────────────────────────────────────────────────────────
+/** The piece's boxes turned by r quarter turns (counter-clockwise). */
+const turned = (t, r) => GEOM[t].boxes.map(({ ox, oy, hx, hy }) => { for (let i = 0; i < r; i++) [ox, oy, hx, hy] = [-oy, ox, hy, hx]; return { ox, oy, hx, hy }; });
+/** Score every column and turn for the falling piece against the skyline: low, flat, centered, supported under its middle. Best first. */
+function rankSpots(T, lean = 0) {
+  const sky = skyline(T), t = T.cur.t, spots = [];
+  let mass = 0, mx = 0;
+  for (const b of T.W.bodies) if (!b.stat && b !== T.cur) { mass += 1 / b.invM; mx += b.x / b.invM; }
+  for (let r = 0; r < 4; r++) {
+    const bs = turned(t, r);
+    for (let x = -CONFIG.baseHalf - 0.5; x <= CONFIG.baseHalf + 0.5; x += 0.5) {
+      let y = -Infinity;
+      for (const q of bs) y = Math.max(y, topAt(sky, x + q.ox - q.hx, x + q.ox + q.hx) - (q.oy - q.hy));
+      if (y === -Infinity) continue;
+      let gap = 0, s0 = Infinity, s1 = -Infinity, top = 0;
+      for (let sx = x - 2.125; sx <= x + 2.125; sx += 0.25) {
+        let bottom = Infinity;
+        for (const q of bs) if (sx > x + q.ox - q.hx && sx < x + q.ox + q.hx) bottom = Math.min(bottom, y + q.oy - q.hy);
+        if (bottom === Infinity) continue;
+        const under = topAt(sky, sx - 0.1, sx + 0.1), g = under === -Infinity ? 3 : bottom - under;
+        if (g < 0.08) { s0 = Math.min(s0, sx); s1 = Math.max(s1, sx); } else gap += Math.min(g, 3) * 0.25;
+      }
+      let wide = 0; // cells hanging past the base's edge make a tower tip
+      for (const q of bs) { top = Math.max(top, y + q.oy + q.hy); wide += Math.max(0, Math.abs(x + q.ox) + q.hx - CONFIG.baseHalf) * q.hy * 2; }
+      const margin = Math.min(x - s0, s1 - x), com = (mx + x * GEOM[t].area) / (mass + GEOM[t].area);
+      const score = -top * 0.4 - gap * 1.5 - wide * 1.2 + Math.min(margin, 0.6) * 3 - (margin < 0 ? 6 : 0) - Math.abs(com) * 1.5 - Math.abs(x - lean) * 0.15 + Math.random() * 0.25;
+      spots.push({ r, x, y, score });
+    }
+  }
+  return spots.sort((a, b) => b.score - a.score);
+}
+/** Test-drop the piece on a copy of the tower for one second: how much does the tower shift, does anything fall? */
+function trialDrop(T, t, sp) {
+  const W2 = { ...newWorld(), iters: 6 }, was = new Map();
+  for (const b of T.W.bodies) {
+    if (b === T.cur) continue;
+    const c = addBody(W2, b.geom, b.x, b.y, b.a, { id: b.id, stat: b.stat, dens: b.dens });
+    Object.assign(c, { vx: b.vx, vy: b.vy, w: b.w, sleep: b.sleep, glued: b.glued, slow: b.slow });
+    was.set(c, [b.x, b.y, b.a]);
+  }
+  const ta = sp.r === 3 ? -Math.PI / 2 : (sp.r * Math.PI) / 2, p = addBody(W2, GEOM[t], sp.x, sp.y + 0.15, ta, { dens: T.cur.dens });
+  p.vy = -CONFIG.fallSpeed;
+  for (let i = 0; i < 45; i++) stepWorld(W2, PHYS.step);
+  let cost = 0;
+  for (const [c, [x, y, a]] of was) cost += Math.hypot(c.x - x, c.y - y) * 2 + Math.abs(c.a - a) * 2 + bodySpeed(c) * 2 + (c.y < -0.5 && y > -0.5 ? 8 : 0); // still moving = about to tip
+  return cost + Math.abs(p.a - ta) * 3 + Math.max(0, sp.y - p.y) * 2 + (p.y < -0.5 ? 8 : 0);
+}
+/** Look at the piece (rank the spots, test-drop the best few, one per frame), turn it, slide it, drop it. Cast a held spell after a while. */
+function botBrain(m, id, bot) {
+  const T = bot.T, W = T.W, b = T.cur;
+  if (T.spell) {
+    if (!T.castAt) T.castAt = W.time + (CONFIG.botCastMs[0] + Math.random() * (CONFIG.botCastMs[1] - CONFIG.botCastMs[0])) / 1000;
+    if (W.time >= T.castAt) { T.castAt = 0; if (T.spell !== "glue" || T.height > 4) cast(m, id, T); }
+  }
+  if (!b || !b.ctl) return;
+  if (!T.plan) {
+    if (!T.spots) { T.thinkAt = W.time + (CONFIG.botThinkMs / 1000) * (0.7 + Math.random() * 0.6); T.spots = rankSpots(T, ((bot.skill % 3) - 1) * 0.8); T.tried = Math.random() < CONFIG.botMistake + bot.skill * 0.04 ? -1 : 0; } // -1: a hasty bot skips the test drops
+    if (T.tried >= 0 && T.tried < Math.min(CONFIG.botTrials, T.spots.length)) { const sp = T.spots[T.tried++]; sp.score -= trialDrop(T, b.t, sp); return; }
+    if (W.time < T.thinkAt) return;
+    const ranked = T.tried < 0 ? T.spots : T.spots.slice(0, T.tried).sort((p, q) => q.score - p.score);
+    T.plan = (T.tried < 0 ? ranked[Math.floor(Math.random() * Math.min(4, ranked.length))] : ranked[0]) || { r: 0, x: 0 };
+    b.tx = T.plan.x; b.ta = T.plan.r === 3 ? -Math.PI / 2 : (T.plan.r * Math.PI) / 2;
+  }
+  if (!T.soft && Math.abs(b.x - b.tx) < 0.06 && Math.abs(b.a - b.ta) < 0.05) { T.soft = true; T.gentle = true; } // bots hurry a piece down, then set it down gently
+}
+function botsTick(m, dt) {
+  for (const [id, bot] of host.bots) {
+    const play = m.ph === "play" && !m.out.includes(id);
+    if (play && bot.T.alive && !bot.T.wonAt) botBrain(m, id, bot);
+    showFx(id, towerTick(bot.T, dt, play));
+  }
+}
+function writeBots() {
+  const now = performance.now(), m = match();
+  if (now - host.lastBots < 120 || !m) return; // ~8/s, and only for a bot whose tower changed
+  host.lastBots = now;
+  for (const [id, bot] of host.bots) { const raw = packTower(bot.T, m.id); if (raw !== host.raws[id]) { host.raws[id] = raw; net.setShared(id, raw); } }
+}
+
+// ── ME ──────────────────────────────────────────────────────────────────────────────
+const me = { m: 0, T: null, sent: "", lastSend: 0 };
+let myName = "", myColor = COLORS[0];
+try { myName = localStorage.getItem("mpa-name") || ""; } catch {}
+if (!myName) myName = ["Ace", "Pip", "Nova", "Ziggy", "Maple", "Taco"][Math.floor(Math.random() * 6)] + " " + (10 + Math.floor(Math.random() * 90));
+
+function myTick(m, dt) {
+  if (m.id !== me.m) { me.m = m.id; me.T = m.players.includes(net.sessionId) ? newTower(m.seed) : null; Object.assign(fx, { parts: [], flash: new Map(), banner: null }); publish(true); }
+  const T = me.T;
+  if (!T) return publish(false);
+  const play = m.ph === "play" && !m.out.includes(net.sessionId);
+  if (play) repeatKeys(performance.now());
+  if (T.cur) T.soft = keys.down;
+  showFx(net.sessionId, towerTick(T, dt, play));
+  publish(false);
+}
+function publish(force) {
+  const now = performance.now(), m = match();
+  if (!m || (!force && now - me.lastSend < CONFIG.publishMs)) return;
+  const v = me.T ? packTower(me.T, m.id) : JSON.stringify({ m: m.id, a: 0, b: [] });
+  if (v === me.sent) return;
+  me.sent = v; me.lastSend = now;
+  net.me.set("t", v);
+}
+const myPiece = () => { const m = match(); return !ATTRACT && m && m.ph === "play" && me.m === m.id && me.T && me.T.alive && !me.T.wonAt && me.T.cur && me.T.cur.ctl ? me.T.cur : null; };
+function act(kind) {
+  const b = myPiece();
+  if (kind === "spell") { const m = match(); if (me.T && me.T.spell && m && m.ph === "play" && me.T.alive) cast(m, net.sessionId, me.T); return; }
+  if (!b) return;
+  if (kind === "left" || kind === "right") { b.tx = Math.max(-CONFIG.laneHalf + 1, Math.min(CONFIG.laneHalf - 1, b.tx + (kind === "left" ? -0.5 : 0.5))); tone(520, 30, "sine", 0.02); }
+  else if (kind === "rotate" || kind === "ccw") { b.ta += kind === "rotate" ? -Math.PI / 2 : Math.PI / 2; tone(700, 40, "sine", 0.025); }
+  else if (kind === "drop") me.T.drop = true;
+}
+
+// ── DRAW ────────────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const cv = $("game"), ctx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1, SAFE_TOP = 0;
+function fit() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; SAFE_TOP = parseFloat(getComputedStyle($("safe")).paddingTop) || 0; }
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+const fx = { parts: [], flash: new Map(), glow: new Map(), banner: null, lanes: new Map(), lives: new Map(), smooth: new Map(), shake: 0 };
+const STARS = Array.from({ length: 90 }, (_, i) => { const r = mulberry32(i * 977 + 3); return { x: r(), y: r() * 0.8, s: 0.5 + r() * 1.6, p: r() * 6 }; });
+
+/** Sounds and particles for one tower's effects (my tower and, on the host, the bots'). */
+function showFx(id, list) {
+  for (const e of list) {
+    if (e.k === "land") { for (let i = 0; i < 6 + Math.min(10, e.v * 2); i++) fx.parts.push({ lane: id, x: e.x, y: e.y, vx: (Math.random() - 0.5) * 4, vy: Math.random() * 2.5, life: 1, c: e.iron ? "#9aa3b5" : "#e8dcff", s: 0.12 }); if (id === net.sessionId) { tone(e.iron ? 90 : 170, 90, "square", 0.035); fx.shake = Math.min(8, e.v * (e.iron ? 1.4 : 0.6)); } }
+    if (e.k === "lost") { fx.flash.set(id, performance.now()); if (id === net.sessionId) { tone(110, 420, "sawtooth", 0.06); fx.shake = 10; } }
+    if (e.k === "charged" && id === net.sessionId) { tone(880, 120, "triangle"); setTimeout(() => tone(1320, 160, "triangle"), 90); }
+    if (e.k === "won") { for (let i = 0; i < 60; i++) fx.parts.push({ lane: id, x: (Math.random() - 0.5) * 8, y: CONFIG.finishY, vx: (Math.random() - 0.5) * 9, vy: 2 + Math.random() * 7, life: 1.4, c: COLORS[i % COLORS.length], s: 0.2 }); if (id === net.sessionId) tone(660, 500, "triangle", 0.07); }
+  }
+}
+/** A tower as this client draws it: mine and (on the host) bots from the live sims, the rest from snapshots, smoothed. */
+function laneView(m, id, now) {
+  const T = id === net.sessionId ? (me.m === m.id ? me.T : null) : isHost() ? host.bots.get(id)?.T : null;
+  if (T) return { b: T.W.bodies.filter((q) => !q.stat).map((q) => ({ id: q.id, t: q.t, x: q.x, y: q.y, a: q.a, f: (q.ctl ? 1 : 0) | (q.glued ? 2 : 0) | (q.iron ? 4 : 0) })), l: T.lives, h: T.height, g: Math.min(1, (T.hold * 1000) / CONFIG.holdMs), w: T.wonAt, a: T.alive, wd: windOn(T) ? Math.sign(T.W.windX) : 0, s: T.spell, nx: pieceAt(T.seed, T.k), ir: T.iron, live: T };
+  const raw = isBot(m, id) ? S.shared[id] : S.entities.players?.[id]?.t, v = cached((isBot(m, id) ? "" : "t:") + id, raw, null);
+  if (!v || v.m !== m.id) return { b: [], l: CONFIG.lives, h: 0, g: 0, w: 0, a: true, wd: 0, s: "", nx: "", ir: 0 };
+  // Smooth 10/s snapshots: glide each block from where it was drawn to its new pose over one snapshot interval.
+  let sm = fx.smooth.get(id);
+  if (!sm || sm.m !== m.id) { sm = { m: m.id, raw: null, from: new Map(), to: new Map(), t0: now, dur: 100, lastAt: now }; fx.smooth.set(id, sm); }
+  const pose = (q) => { const f = sm.from.get(q[0]), k = Math.min(1, (now - sm.t0) / sm.dur), x = q[2] / 100, y = q[3] / 100, a = q[4] / 100; if (!f) return { x, y, a }; const da = Math.atan2(Math.sin(a - f.a), Math.cos(a - f.a)); return { x: f.x + (x - f.x) * k, y: f.y + (y - f.y) * k, a: f.a + da * k }; };
+  if (sm.raw !== raw) { const from = new Map(); for (const q of sm.to.values()) from.set(q[0], pose(q)); sm.from = from; sm.to = new Map((v.b || []).map((q) => [q[0], q])); sm.dur = Math.max(50, Math.min(250, now - sm.lastAt)); sm.lastAt = sm.t0 = now; sm.raw = raw; }
+  return { b: [...sm.to.values()].map((q) => ({ id: q[0], t: q[1], ...pose(q), f: q[5] })), l: v.l, h: (v.h || 0) / 100, g: (v.g || 0) / 100, w: v.w, a: !!v.a, wd: v.wd, s: v.s, nx: pieceAt(m.seed, v.k || 0), ir: v.ir };
+}
+/** Where each lane goes: mine big, rivals small beside it (or above it on a tall screen). */
+function layout(ids) {
+  const mine = ids.includes(net.sessionId) && !ATTRACT ? net.sessionId : ids[0], rivals = ids.filter((id) => id !== mine), n = Math.max(1, rivals.length);
+  const AR = (CONFIG.laneHalf * 2) / (CONFIG.viewTop - CONFIG.viewBottom), spots = new Map();
+  if (W >= H * 0.95) {
+    let bh = H - 96 - SAFE_TOP, bw = bh * AR;
+    if (bw > W * 0.44) { bw = W * 0.44; bh = bw / AR; }
+    let sw = Math.min((W - bw - 70 - 18 * n) / n, bw * 0.62), sh = sw / AR;
+    if (sh > H * 0.66) { sh = H * 0.66; sw = sh * AR; }
+    const x0 = Math.round((W - (bw + 44 + n * (sw + 18) - 18)) / 2), y0 = SAFE_TOP + (H - SAFE_TOP - bh) / 2 + 6;
+    spots.set(mine, { x: x0, y: y0, w: bw, h: bh, big: true });
+    rivals.forEach((id, i) => spots.set(id, { x: x0 + bw + 44 + i * (sw + 18), y: y0 + (bh - sh) / 2, w: sw, h: sh }));
+  } else {
+    let sw = Math.min((W - 32 - 12 * (n - 1)) / n, 150), sh = sw / AR;
+    if (sh > H * 0.19) { sh = H * 0.19; sw = sh * AR; }
+    const top = SAFE_TOP + 62; // room for the clock above the rivals' names
+    let bh = H - top - sh - 40 - 60, bw = bh * AR;
+    if (bw > W - 32) { bw = W - 32; bh = bw / AR; }
+    rivals.forEach((id, i) => spots.set(id, { x: (W - (n * sw + 12 * (n - 1))) / 2 + i * (sw + 12), y: top, w: sw, h: sh }));
+    spots.set(mine, { x: (W - bw) / 2, y: top + sh + 34, w: bw, h: bh, big: true });
+  }
+  for (const sp of spots.values()) sp.scale = sp.w / (CONFIG.laneHalf * 2);
+  return spots;
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+/** One block body in lane units (the lane transform is already set). */
+function drawBody(q, detail, alpha = 1) {
+  const g = GEOM[q.t];
+  if (!g) return;
+  const color = q.f & 4 ? "#7d8799" : PIECES[q.t].color;
+  ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.a); ctx.globalAlpha = alpha;
+  for (const b of g.boxes) {
+    for (let cx = -b.hx + 0.5; cx < b.hx; cx += 1) for (let cy = -b.hy + 0.5; cy < b.hy; cy += 1) {
+      const x = b.ox + cx - 0.5, y = b.oy + cy - 0.5;
+      ctx.fillStyle = color; ctx.fillRect(x + 0.02, y + 0.02, 0.96, 0.96);
+      if (!detail) continue;
+      ctx.fillStyle = "#ffffff4a"; ctx.fillRect(x + 0.02, y + 0.8, 0.96, 0.18); ctx.fillRect(x + 0.02, y + 0.02, 0.16, 0.96);
+      ctx.fillStyle = "#0000003a"; ctx.fillRect(x + 0.02, y + 0.02, 0.96, 0.16); ctx.fillRect(x + 0.82, y + 0.02, 0.16, 0.96);
+      if (q.f & 4) { ctx.fillStyle = "#c8d0dd"; for (const [rx, ry] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) ctx.fillRect(x + rx - 0.05, y + ry - 0.05, 0.1, 0.1); }
+      else { ctx.fillStyle = "#ffffff30"; ctx.beginPath(); ctx.arc(x + 0.5, y + 0.5, 0.14, 0, 7); ctx.fill(); }
+    }
+  }
+  if (q.f & 2) { ctx.strokeStyle = "#5dff8a"; ctx.lineWidth = 0.09; for (const b of g.boxes) ctx.strokeRect(b.ox - b.hx + 0.04, b.oy - b.hy + 0.04, b.hx * 2 - 0.08, b.hy * 2 - 0.08); }
+  ctx.restore();
+}
+function drawLane(m, id, v, sp, now) {
+  const big = !!sp.big, s = sp.scale, color = colorOf(m, id);
+  let ox = sp.x, oy = sp.y;
+  if (big && fx.shake > 0.3) { ox += (Math.random() - 0.5) * fx.shake; oy += (Math.random() - 0.5) * fx.shake; }
+  // panel
+  const grd = ctx.createLinearGradient(0, oy, 0, oy + sp.h); grd.addColorStop(0, "#2a1f5ecc"); grd.addColorStop(1, "#140f30ee");
+  roundRect(ox, oy, sp.w, sp.h, big ? 14 : 8); ctx.fillStyle = grd; ctx.fill();
+  ctx.lineWidth = big ? 3 : 2; ctx.strokeStyle = color + (fx.glow.has(id) && now - fx.glow.get(id) < 600 ? "" : "99"); ctx.stroke();
+  ctx.save(); roundRect(ox, oy, sp.w, sp.h, big ? 14 : 8); ctx.clip();
+  ctx.translate(ox + CONFIG.laneHalf * s, oy + CONFIG.viewTop * s); ctx.scale(s, -s); // lane units from here: y up, the base top at 0
+  // the finish line and its glow
+  const fy = CONFIG.finishY, pulse = 0.5 + 0.5 * Math.sin(now / 300);
+  ctx.fillStyle = `rgba(255,210,63,${0.06 + 0.05 * pulse})`; ctx.fillRect(-CONFIG.laneHalf, fy, CONFIG.laneHalf * 2, 0.8);
+  if (big) { ctx.save(); ctx.scale(1 / s, -1 / s); ctx.fillStyle = "#ffd23fcc"; ctx.font = "800 11px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.fillText("FINISH", (-CONFIG.laneHalf + 0.3) * s, -(fy + 0.25) * s); ctx.restore(); }
+  ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 0.09; ctx.setLineDash([0.5, 0.3]); ctx.beginPath(); ctx.moveTo(-CONFIG.laneHalf, fy); ctx.lineTo(CONFIG.laneHalf, fy); ctx.stroke(); ctx.setLineDash([]);
+  if (v.g > 0) { ctx.fillStyle = "#ffd23f"; ctx.fillRect(-CONFIG.laneHalf, fy - 0.12, CONFIG.laneHalf * 2 * v.g, 0.24); }
+  // the base: a stone pedestal
+  ctx.fillStyle = "#5e5878"; ctx.fillRect(-CONFIG.baseHalf, -6, CONFIG.baseHalf * 2, 6);
+  ctx.fillStyle = "#7a7397"; ctx.fillRect(-CONFIG.baseHalf, -0.35, CONFIG.baseHalf * 2, 0.35);
+  if (big) { // mortar lines
+    ctx.strokeStyle = "#3f3a58"; ctx.lineWidth = 0.06; ctx.beginPath();
+    for (let r = 0; r < 5; r++) { const y = -0.35 - r; ctx.moveTo(-CONFIG.baseHalf, y); ctx.lineTo(CONFIG.baseHalf, y); for (let x = -CONFIG.baseHalf + (r % 2 ? 0.75 : 1.5); x < CONFIG.baseHalf; x += 1.5) { ctx.moveTo(x, y); ctx.lineTo(x, y - 1); } }
+    ctx.stroke();
+  }
+  // a guide under my falling piece
+  const cur = v.live && v.live.cur && v.live.cur.ctl ? v.live.cur : null;
+  if (big && cur && id === net.sessionId) {
+    const sky = skyline(v.live);
+    ctx.fillStyle = "#ffffff12";
+    for (const q of worldBoxes(cur)) { const ex = Math.abs(q.c) * q.hx + Math.abs(q.s) * q.hy, ey = Math.abs(q.s) * q.hx + Math.abs(q.c) * q.hy, under = Math.max(CONFIG.viewBottom, topAt(sky, q.x - ex, q.x + ex)); if (q.y - ey > under) ctx.fillRect(q.x - ex, under, ex * 2, q.y - ey - under); }
+  }
+  for (const q of v.b) drawBody(q, big || s > 9);
+  // wind streaks
+  if (v.wd) { ctx.strokeStyle = "#ffffff55"; ctx.lineWidth = 0.08; for (let i = 0; i < 14; i++) { const y = ((i * 37) % 19) - 2, x = ((now / 1000) * 14 * v.wd + i * 5.3) % 16; ctx.beginPath(); const xx = v.wd > 0 ? -8 + ((x + 16) % 16) : 8 - ((-x + 16) % 16); ctx.moveTo(xx, y); ctx.lineTo(xx - v.wd * 2.2, y); ctx.stroke(); } }
+  // particles
+  for (const p of fx.parts) if (p.lane === id) { ctx.globalAlpha = Math.max(0, Math.min(1, p.life)); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s, p.y - p.s, p.s * 2, p.s * 2); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  // a lost block flashes the lane red
+  const fl = fx.flash.get(id);
+  if (fl && now - fl < 400) { roundRect(ox, oy, sp.w, sp.h, big ? 14 : 8); ctx.fillStyle = `rgba(255,60,90,${0.35 * (1 - (now - fl) / 400)})`; ctx.fill(); }
+  // labels: name, lives, height
+  ctx.textAlign = "center"; ctx.fillStyle = color; ctx.font = `800 ${big ? 16 : 12}px system-ui, sans-serif`;
+  ctx.fillText(id === net.sessionId && !ATTRACT ? "You" : nameOf(m, id), ox + sp.w / 2, oy - 8);
+  ctx.font = `${big ? 18 : 12}px system-ui, sans-serif`; ctx.textAlign = "left";
+  ctx.fillText("♥".repeat(Math.max(0, v.l)) , ox + 8, oy + (big ? 24 : 16)); ctx.fillStyle = "#ffffff30"; ctx.fillText("♥".repeat(Math.max(0, CONFIG.lives - Math.max(0, v.l))), ox + 8 + ctx.measureText("♥".repeat(Math.max(0, v.l))).width, oy + (big ? 24 : 16));
+  ctx.textAlign = "right"; ctx.fillStyle = "#e8e2ff"; ctx.font = `700 ${big ? 14 : 11}px system-ui, sans-serif`;
+  ctx.fillText(`${v.h.toFixed(1)} m`, ox + sp.w - 8, oy + (big ? 22 : 15));
+  if (v.s) { ctx.font = `${big ? 18 : 12}px system-ui, sans-serif`; ctx.fillText(SPELLS[v.s].icon, ox + sp.w - 8, oy + (big ? 46 : 30)); }
+  if (big && v.nx && PIECES[v.nx]) { // the next piece, top left
+    const ns = Math.max(7, s * 0.55), nx = ox + 12, ny = oy + 40;
+    ctx.fillStyle = "#cfc8f5"; ctx.font = "700 11px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.fillText(v.ir ? "NEXT · IRON" : "NEXT", nx, ny);
+    for (const [rx, ry, rw, rh] of PIECES[v.nx].rects) for (let i = 0; i < rw; i++) for (let j = 0; j < rh; j++) { ctx.fillStyle = v.ir ? "#7d8799" : PIECES[v.nx].color; ctx.fillRect(nx + (rx + i) * ns, ny + 8 + (1 - (ry + j)) * ns, ns - 1, ns - 1); }
+  }
+  if (big && v.g > 0 && !v.w) { ctx.textAlign = "center"; ctx.fillStyle = "#ffd23f"; ctx.font = "900 18px system-ui, sans-serif"; ctx.fillText(`HOLD… ${(CONFIG.holdMs / 1000 * (1 - v.g)).toFixed(1)}`, ox + sp.w / 2, oy + (CONFIG.viewTop - CONFIG.finishY - 1.1) * s); }
+  if (!v.a || m.out.includes(id)) { roundRect(ox, oy, sp.w, sp.h, big ? 14 : 8); ctx.fillStyle = "#120d2abb"; ctx.fill(); ctx.textAlign = "center"; ctx.fillStyle = "#ff5a6e"; ctx.font = `900 ${big ? 44 : 22}px system-ui, sans-serif`; ctx.fillText("KO", ox + sp.w / 2, oy + sp.h / 2); }
+  if (v.w) { ctx.textAlign = "center"; ctx.fillStyle = "#ffd23f"; ctx.font = `900 ${big ? 34 : 18}px system-ui, sans-serif`; ctx.fillText("★ TOP!", ox + sp.w / 2, oy + (CONFIG.viewTop - CONFIG.finishY - 1.4) * s); }
+  // rivals' losses (I only see their snapshots): flash when their lives drop
+  const lv = fx.lives.get(id);
+  if (lv !== undefined && v.l < lv && !v.live) fx.flash.set(id, now);
+  fx.lives.set(id, v.l);
+}
+function draw(m, now, dt) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const grd = ctx.createLinearGradient(0, 0, 0, H); grd.addColorStop(0, "#1b1146"); grd.addColorStop(0.6, "#2b1a5c"); grd.addColorStop(1, "#3d2160");
+  ctx.fillStyle = grd; ctx.fillRect(0, 0, W, H);
+  for (const st of STARS) { ctx.globalAlpha = 0.35 + 0.35 * Math.sin(now / 700 + st.p); ctx.fillStyle = "#fff"; ctx.fillRect(st.x * W, st.y * H, st.s, st.s); }
+  ctx.globalAlpha = 1;
+  if (W > H) { // the moon (landscape only: on a phone it would sit behind the rivals)
+    ctx.fillStyle = "#fff6d8"; ctx.beginPath(); ctx.arc(W * 0.88, H * 0.12, 26, 0, 7); ctx.fill();
+    ctx.fillStyle = "#1b1146"; ctx.beginPath(); ctx.arc(W * 0.88 + 11, H * 0.12 - 7, 23, 0, 7); ctx.fill();
+  }
+  if (!m) return;
+  for (const p of fx.parts) { p.life -= dt * 1.4; p.vy -= 9 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+  fx.parts = fx.parts.filter((p) => p.life > 0); fx.shake *= 0.86;
+  const spots = layout(m.players);
+  fx.spots = spots;
+  for (const id of m.players) drawLane(m, id, laneView(m, id, now), spots.get(id), now);
+  const t = Date.now();
+  if (m.ph === "count") { const n = Math.ceil((m.startAt - t) / 1000); big(n > 0 ? String(n) : "GO!", "#ffd23f"); }
+  else if (m.ph === "play" && t - m.startAt < 700) big("GO!", "#80ed99");
+  else if (m.ph === "play" && !m.players.includes(net.sessionId) && !ATTRACT) big("Watching", "#cfc8f5", "You'll play in the next match");
+  if (m.ph === "play" && !ATTRACT) { const left = Math.max(0, m.raceEnd - t); ctx.textAlign = "center"; ctx.fillStyle = left < 20000 ? "#ff6b6b" : "#e8e2ff"; ctx.font = "800 15px system-ui, sans-serif"; ctx.fillText(`⏳ ${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, "0")}`, W / 2, SAFE_TOP + 20); }
+  if (fx.banner && now - fx.banner.at < 2200) { const k = Math.min(1, (now - fx.banner.at) / 200); ctx.globalAlpha = Math.min(1, (2200 - (now - fx.banner.at)) / 300); ctx.textAlign = "center"; ctx.font = "800 18px system-ui, sans-serif"; const w = ctx.measureText(fx.banner.text).width + 28, y = SAFE_TOP + 44 + (1 - k) * -20; roundRect(W / 2 - w / 2, y - 22, w, 34, 17); ctx.fillStyle = "#5b2fc9ee"; ctx.fill(); ctx.fillStyle = "#fff"; ctx.fillText(fx.banner.text, W / 2, y + 1); ctx.globalAlpha = 1; }
+}
+function big(text, color, sub) {
+  ctx.textAlign = "center"; ctx.font = `900 ${Math.min(96, W * 0.16)}px system-ui, sans-serif`;
+  ctx.lineWidth = 8; ctx.strokeStyle = "#120d2a"; ctx.strokeText(text, W / 2, H * 0.45); ctx.fillStyle = color; ctx.fillText(text, W / 2, H * 0.45);
+  if (sub) { ctx.font = "700 16px system-ui, sans-serif"; ctx.fillStyle = "#fff"; ctx.fillText(sub, W / 2, H * 0.45 + 36); }
+}
+
+// ── SCREENS ─────────────────────────────────────────────────────────────────────────
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+let AC = null;
+function unlockAudio() { if (!AC && !ATTRACT) try { AC = new AudioContext(); } catch {} }
+function tone(f, ms, type = "sine", vol = 0.05) {
+  if (!AC) return;
+  const o = AC.createOscillator(), gn = AC.createGain(), t = AC.currentTime;
+  o.type = type; o.frequency.value = f; gn.gain.setValueAtTime(vol, t); gn.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+  o.connect(gn).connect(AC.destination); o.start(t); o.stop(t + ms / 1000);
+}
+const fmt = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, "0")}.${String(Math.floor((ms % 1000) / 100))}`;
+let overFor = -1, board = null;
+let dropped = false; // true while the connection is down: the HUD keeps showing "Reconnecting…"
+function hud(m) {
+  const n = humans().length;
+  $("net").textContent = ATTRACT ? "" : net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the match" : ""}`;
+  const sp = me.T && me.T.spell && m && m.ph === "play" && me.T.alive && !ATTRACT ? SPELLS[me.T.spell] : null;
+  $("spell").hidden = !sp;
+  if (sp) { $("spell").firstChild.textContent = sp.icon; $("spell").lastChild.textContent = sp.name + (touchUI ? "" : " (E)"); }
+  if (!m) return;
+  const early = m.ph === "count" || (m.ph === "play" && Date.now() - m.startAt < 14000 && m.id <= 2);
+  $("hint").textContent = ATTRACT || !early ? "" : touchUI ? "Drag to move · tap to turn · flick down to drop · hold your tower above the gold line" : "← → move · ↑ turn · ↓ faster · Space drop · E spell · hold your tower above the gold line";
+  $("over").hidden = m.ph !== "over" || ATTRACT;
+  if (m.ph !== "over") return;
+  const info = (id) => towerInfoAny(m, id), place = [...m.players].sort((a, b) => (b === m.winner) - (a === m.winner) || m.out.includes(a) - m.out.includes(b) || (info(b)?.h || 0) - (info(a)?.h || 0));
+  $("oTitle").textContent = !m.winner ? "Draw!" : m.winner === net.sessionId ? "You win!" : `${nameOf(m, m.winner)} wins!`;
+  const html = place.map((id) => { const v = info(id); return `<li class="${id === net.sessionId ? "me" : ""}">${esc(nameOf(m, id))}<span>${v && v.w ? fmt(v.w - m.startAt) : m.out.includes(id) ? "KO" : ((v?.h || 0) / 100).toFixed(1) + " m"}</span></li>`; }).join("");
+  if ($("places").innerHTML !== html) $("places").innerHTML = html;
+  $("oNext").textContent = `Next match in ${Math.max(0, Math.ceil((m.endsAt - Date.now()) / 1000))}s`;
+  $("again").textContent = m.ready.includes(net.sessionId) ? "Ready ✓" : "Play again";
+  if (overFor === m.id) return;
+  overFor = m.id;
+  const list = $("board"), won = me.T && me.m === m.id && me.T.wonAt ? me.T.wonAt - m.startAt : 0;
+  if (m.winner === net.sessionId) tone(660, 400, "triangle", 0.07);
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  (won > 0 ? board.submit(Math.max(0, 600000 - won)).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${fmt(600000 - e.score)}</span></li>`).join("") : "<li>No towers yet. Be the first to the line.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+/** Any client's view of a tower's result: my sim, the host's bot sims, or the snapshots. */
+function towerInfoAny(m, id) {
+  if (id === net.sessionId || (isHost() && host.bots.has(id))) return towerInfo(m, id);
+  return cached((isBot(m, id) ? "" : "t:") + id, isBot(m, id) ? S.shared[id] : S.entities.players?.[id]?.t, null);
+}
+$("again").addEventListener("click", () => { if (isHost()) onReady(net.sessionId); else net.send("ready", { r: 1 }); });
+
+/** Two players picked one color (they joined at once), or a bot has mine: the later sessionId picks another. */
+function fixColor() {
+  const ps = S.entities.players || {}, botColors = (match()?.bots || []).map((b) => b.c);
+  if (!Object.entries(ps).some(([id, p]) => id < net.sessionId && p.c === myColor) && !botColors.includes(myColor)) return;
+  const taken = new Set([...Object.entries(ps).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c), ...botColors]);
+  myColor = COLORS.find((c) => !taken.has(c)) || myColor;
+  net.me.set("c", myColor);
+}
+
+// ── INPUT ───────────────────────────────────────────────────────────────────────────
+const touchUI = matchMedia("(pointer: coarse)").matches;
+const keys = { left: false, right: false, down: false, held: "", heldAt: 0, stepAt: 0 };
+const KEYMAP = { ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right", ArrowDown: "down", s: "down", ArrowUp: "rotate", w: "rotate", x: "rotate", z: "ccw", " ": "drop", e: "spell", Shift: "spell" };
+addEventListener("keydown", (e) => {
+  const k = KEYMAP[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+  if (!k) return;
+  e.preventDefault(); unlockAudio();
+  if (e.repeat) return;
+  if (k === "left" || k === "right") { keys[k] = true; keys.held = k; keys.heldAt = performance.now(); act(k); }
+  else if (k === "down") keys.down = true;
+  else act(k);
+});
+addEventListener("keyup", (e) => {
+  const k = KEYMAP[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+  if (k === "left" || k === "right") { keys[k] = false; if (keys.held === k) keys.held = keys.left ? "left" : keys.right ? "right" : ""; keys.heldAt = performance.now(); }
+  if (k === "down") keys.down = false;
+});
+addEventListener("blur", () => Object.assign(keys, { left: false, right: false, down: false, held: "" }));
+/** Held left/right: one step, a pause (das), then a step every arr ms. */
+function repeatKeys(now) {
+  if (!keys.held || now - keys.heldAt < CONFIG.das || now < keys.stepAt) return;
+  keys.stepAt = now + CONFIG.arr; act(keys.held);
+}
+// Touch and mouse: drag sideways = half a cell per half-cell of finger travel (measured in my lane's scale), tap = turn, flick down = drop.
+const swipe = { id: -1, x: 0, x0: 0, y0: 0, t0: 0, moved: false };
+cv.addEventListener("pointerdown", (e) => { e.preventDefault(); unlockAudio(); Object.assign(swipe, { id: e.pointerId, x: e.clientX, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false }); cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("pointermove", (e) => {
+  if (e.pointerId !== swipe.id) return;
+  const step = Math.max(10, (fx.spots?.get(net.sessionId)?.scale || 30) * 0.5);
+  while (e.clientX - swipe.x > step) { act("right"); swipe.x += step; swipe.moved = true; }
+  while (swipe.x - e.clientX > step) { act("left"); swipe.x -= step; swipe.moved = true; }
+  keys.down = e.clientY - swipe.y0 > 40 && Math.abs(e.clientX - swipe.x0) < 40; if (keys.down) swipe.moved = true;
+});
+cv.addEventListener("pointerup", (e) => {
+  if (e.pointerId !== swipe.id) return;
+  swipe.id = -1; keys.down = false;
+  const dx = e.clientX - swipe.x0, dy = e.clientY - swipe.y0, ms = performance.now() - swipe.t0;
+  if (dy > 50 && dy > Math.abs(dx) * 1.5 && ms < 300) act("drop");
+  else if (!swipe.moved && Math.hypot(dx, dy) < 12) act("rotate");
+});
+cv.addEventListener("pointercancel", () => { swipe.id = -1; keys.down = false; });
+$("spell").addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); unlockAudio(); act("spell"); });
+document.addEventListener("touchmove", (e) => { if (!e.target.closest(".card")) e.preventDefault(); }, { passive: false });
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
+let lastHb = 0, lastHud = 0, lastFrame = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (performance.now() - lastTick > 1000) { hostHold = performance.now() + 700; host.was = false; } // the tab was frozen or in the background: someone else may have hosted meanwhile, so let its state arrive, then adopt it
+  lastTick = performance.now(); // not the rAF time: after a long freeze Chrome can stamp the first frame from before it ended
+  const dt = Math.max(0, Math.min(0.05, (now - lastFrame) / 1000)); lastFrame = now;
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); }
+  if (isHost()) hostTick(Date.now(), dt); else host.was = false;
+  const m = match();
+  if (m) { myTick(m, dt); if (m.ph !== "play") fixColor(); }
+  draw(m, now, dt);
+  if (now - lastHud > 150) { lastHud = now; hud(m); }
+}
+
+(async function start() {
+  if (ATTRACT) Object.assign(CONFIG, { countdownMs: 200, fallSpeed: 4.5, botThinkMs: 450, nextDelayMs: 200, spellEvery: 2, botCastMs: [300, 1200], overMs: 2500, holdMs: 1200 });
+  net = await connect();
+  net.onState((st) => { S = st; });
+  net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { dropped = false; });
+  net.on("spell", (msg, from) => { if (msg && typeof msg === "object") spellLanded(match(), { k: String(msg.k), f: String(msg.f || from), m: msg.m, d: msg.d < 0 ? -1 : 1 }); });
+  net.on("ready", (msg, from) => { if (isHost()) onReady(from); });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set([...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c), ...(match()?.bots || []).map((b) => b.c)]);
+  myColor = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
+  net.me.set({ n: myName, c: myColor, hb: Date.now() });
+  if (ATTRACT) { // the preview starts mid-match: every bot already has a tower going
+    const m = writeMatch({ ...newMatch(1), ph: "play", startAt: Date.now() - 20000 });
+    [4, 5, 3, 4.5].forEach((tall, i) => { const bot = host.bots.get("bot" + (i + 1)); if (!bot) return; for (let k = 0; k < 60 * 60 && (bot.T.height < tall || bot.T.cur); k++) { botBrain(m, "bot" + (i + 1), bot); towerTick(bot.T, PHYS.step, true); Object.assign(bot.T, { spell: "", hold: 0, wonAt: 0, lives: CONFIG.lives, alive: true }); } });
+    host.was = true; host.lastBots = 0; writeBots();
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
