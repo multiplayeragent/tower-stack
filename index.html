@@ -20,7 +20,7 @@
   .card { width: min(380px, calc(100vw - 32px)); max-height: 92vh; overflow: auto; box-sizing: border-box; padding: 20px; border-radius: 18px; background: #241b4d; border: 1px solid #ffffff22; text-align: center; box-shadow: 0 20px 60px #0009; }
   .card h2 { margin: 0 0 6px; font-size: 26px; }
   .card h3 { margin: 12px 0 0; font-size: 12px; letter-spacing: .1em; color: #b3a5ea; }
-  .card ol { text-align: left; margin: 8px 0; padding-left: 26px; font-size: 14px; } .card li span { float: right; } .card li.me { color: #ffd23f; font-weight: 700; }
+  .card ol { text-align: left; margin: 8px 0; padding-left: 26px; font-size: 14px; } .card li span { float: right; } .card li.me { color: #ffd23f; font-weight: 700; } .card li.note { list-style: none; margin-left: -26px; color: #b3a5ea; }
   button.go { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: #ffd23f; color: #241b4d; font: 800 17px system-ui, sans-serif; cursor: pointer; margin-top: 8px; }
   #oNext { color: #b3a5ea; font-size: 13px; margin-top: 8px; }
 </style>
@@ -34,7 +34,7 @@
 <button id="spell" hidden><b>✨</b><span></span></button>
 <div id="over" hidden><div class="card">
   <h2 id="oTitle"></h2><ol id="places"></ol>
-  <h3>FASTEST TOWER TO THE LINE</h3><ol id="board"><li>Loading the leaderboard…</li></ol>
+  <h3>FASTEST TOWER TO THE LINE</h3><ol id="board"><li class="note">Loading the leaderboard…</li></ol>
   <button class="go" id="again">Play again</button><div id="oNext"></div>
 </div></div>
 <script>
@@ -463,8 +463,8 @@ function spellLanded(m, msg) {
     if (msg.f !== net.sessionId && me.m === m.id) spellHits(me.T, msg.k, msg.d);
     if (isHost()) for (const [id, bot] of host.bots) if (id !== msg.f) spellHits(bot.T, msg.k, msg.d);
   }
-  const who = msg.f === net.sessionId ? "You" : nameOf(m, msg.f);
-  fx.banner = { text: `${SPELLS[msg.k].icon} ${who} ${msg.f === net.sessionId ? SPELLS[msg.k].say.replace("their", "your").replace("your next piece", "rivals' next piece") : SPELLS[msg.k].say}`, at: performance.now() };
+  const who = msg.f === net.sessionId ? "You" : nameOf(m, msg.f), playing = !ATTRACT && me.T && me.m === m.id; // a watcher has no "next piece" to make iron
+  fx.banner = { text: `${SPELLS[msg.k].icon} ${who} ${msg.f === net.sessionId ? SPELLS[msg.k].say.replace("their", "your").replace("your next piece", "rivals' next piece") : playing ? SPELLS[msg.k].say : SPELLS[msg.k].say.replace("your next piece", "rivals' next piece")}`, at: performance.now() };
   fx.glow.set(msg.f, performance.now());
   tone(msg.k === "gust" ? 300 : msg.k === "iron" ? 140 : 620, 380, msg.k === "iron" ? "square" : "triangle", 0.04);
 }
@@ -697,7 +697,7 @@ function layout(ids) {
     let sw = Math.min((W - 32 - 12 * (n - 1)) / n, 150), sh = sw / AR;
     if (sh > H * 0.19) { sh = H * 0.19; sw = sh * AR; }
     const top = SAFE_TOP + 62; // room for the clock above the rivals' names
-    let bh = H - top - sh - 40 - 60, bw = bh * AR;
+    let bh = H - top - sh - 40 - 78, bw = bh * AR; // 78: room below for the hint, the #net line and the spell button
     if (bw > W - 32) { bw = W - 32; bh = bw / AR; }
     rivals.forEach((id, i) => spots.set(id, { x: (W - (n * sw + 12 * (n - 1))) / 2 + i * (sw + 12), y: top, w: sw, h: sh }));
     spots.set(mine, { x: (W - bw) / 2, y: top + sh + 34, w: bw, h: bh, big: true });
@@ -809,7 +809,8 @@ function draw(m, now, dt) {
   else if (m.ph === "play" && t - m.startAt < 700) big("GO!", "#80ed99");
   else if (m.ph === "play" && !m.players.includes(net.sessionId) && !ATTRACT) big("Watching", "#cfc8f5", "You'll play in the next match");
   if (m.ph === "play" && !ATTRACT) { const left = Math.max(0, m.raceEnd - t); ctx.textAlign = "center"; ctx.fillStyle = left < 20000 ? "#ff6b6b" : "#e8e2ff"; ctx.font = "800 15px system-ui, sans-serif"; ctx.fillText(`⏳ ${Math.floor(left / 60000)}:${String(Math.floor((left % 60000) / 1000)).padStart(2, "0")}`, W / 2, SAFE_TOP + 20); }
-  if (fx.banner && now - fx.banner.at < 2200) { const k = Math.min(1, (now - fx.banner.at) / 200); ctx.globalAlpha = Math.min(1, (2200 - (now - fx.banner.at)) / 300); ctx.textAlign = "center"; ctx.font = "800 18px system-ui, sans-serif"; const w = ctx.measureText(fx.banner.text).width + 28, y = SAFE_TOP + 44 + (1 - k) * -20; roundRect(W / 2 - w / 2, y - 22, w, 34, 17); ctx.fillStyle = "#5b2fc9ee"; ctx.fill(); ctx.fillStyle = "#fff"; ctx.fillText(fx.banner.text, W / 2, y + 1); ctx.globalAlpha = 1; }
+  // the spell banner (on a tall screen: in the gap above my lane, not over the rivals' names)
+  if (fx.banner && now - fx.banner.at < 2200) { const k = Math.min(1, (now - fx.banner.at) / 200); ctx.globalAlpha = Math.min(1, (2200 - (now - fx.banner.at)) / 300); ctx.textAlign = "center"; ctx.font = `800 ${W < 500 ? 15 : 18}px system-ui, sans-serif`; const w = ctx.measureText(fx.banner.text).width + 28, mine = [...spots.values()].find((s) => s.big), y = (W >= H * 0.95 || !mine ? SAFE_TOP + 44 : mine.y - 12) + (1 - k) * -20; roundRect(W / 2 - w / 2, y - 22, w, 34, 17); ctx.fillStyle = "#5b2fc9ee"; ctx.fill(); ctx.fillStyle = "#fff"; ctx.fillText(fx.banner.text, W / 2, y + 1); ctx.globalAlpha = 1; }
 }
 function big(text, color, sub) {
   ctx.textAlign = "center"; ctx.font = `900 ${Math.min(96, W * 0.16)}px system-ui, sans-serif`;
@@ -851,11 +852,11 @@ function hud(m) {
   overFor = m.id;
   const list = $("board"), won = me.T && me.m === m.id && me.T.wonAt ? me.T.wonAt - m.startAt : 0;
   if (m.winner === net.sessionId) tone(660, 400, "triangle", 0.07);
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = "<li class='note'>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li class='note'>Loading…</li>";
   (won > 0 ? board.submit(Math.max(0, 600000 - won)).catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${fmt(600000 - e.score)}</span></li>`).join("") : "<li>No towers yet. Be the first to the line.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${fmt(600000 - e.score)}</span></li>`).join("") : "<li class='note'>No towers yet. Be the first to the line.</li>";
+  }).catch(() => { list.innerHTML = "<li class='note'>Couldn't load the leaderboard.</li>"; });
 }
 /** Any client's view of a tower's result: my sim, the host's bot sims, or the snapshots. */
 function towerInfoAny(m, id) {
@@ -899,7 +900,8 @@ function repeatKeys(now) {
 }
 // Touch and mouse: drag sideways = half a cell per half-cell of finger travel (measured in my lane's scale), tap = turn, flick down = drop.
 const swipe = { id: -1, x: 0, x0: 0, y0: 0, t0: 0, moved: false };
-cv.addEventListener("pointerdown", (e) => { e.preventDefault(); unlockAudio(); Object.assign(swipe, { id: e.pointerId, x: e.clientX, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false }); cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("contextmenu", (e) => e.preventDefault()); // right-click: no browser menu
+cv.addEventListener("pointerdown", (e) => { e.preventDefault(); unlockAudio(); if (e.button !== 0) return; Object.assign(swipe, { id: e.pointerId, x: e.clientX, x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: false }); cv.setPointerCapture(e.pointerId); });
 cv.addEventListener("pointermove", (e) => {
   if (e.pointerId !== swipe.id) return;
   const step = Math.max(10, (fx.spots?.get(net.sessionId)?.scale || 30) * 0.5);
