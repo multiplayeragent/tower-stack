@@ -68,8 +68,8 @@
  *     ph, seed, startAt, raceEnd, players, bots, out, winner, endsAt, ready}. It reads every
  *     tower, marks who lost all lives and calls the winner. Each bot's tower lives in a shared
  *     field `bot1` … `bot4` (same shape as `t`); a new host rebuilds the bots from them.
- *   - Spells are events: "spell" {k, f, m, d}. Each player applies a gust or iron to its OWN
- *     tower when it hears one; the host applies them to its bots.
+ *   - Spells are events: "spell" {k, f, m, d}, checked by spellOk(). Each player applies a gust
+ *     or iron to its OWN tower when it hears one; the host applies them to its bots.
  *   - Everyone gets the same pieces in the same order: 7-piece bags shuffled from match.seed.
  *   - ?attract plays offline with bots only (the preview video is recorded from it).
  *   - Leaderboard "fast-tower": your fastest time to the finish line.
@@ -455,6 +455,18 @@ function cast(m, from, T) {
   if (k === "glue") glueTower(T);
   spellLanded(m, { k, f: from, m: m.id, d });
   net.send("spell", { k, f: from, m: m.id, d });
+}
+/** Is a "spell" event real? From a player in this match (a bot's only from the host), and no more
+ *  spells than the caster has charged: one per CONFIG.spellEvery pieces it has landed (its snapshot's `p`). */
+const spellsIn = new Map(); // "match:caster" -> spells accepted from that caster
+function spellOk(m, msg, from) {
+  if (!m || m.ph !== "play" || msg.m !== m.id || !SPELLS[msg.k] || !m.players.includes(msg.f)) return false;
+  if (isBot(m, msg.f) ? from !== livePlayers()[0] : from !== msg.f) return false; // a bot's spell comes from the host, a player's from itself
+  const v = isBot(m, msg.f) ? cached(msg.f, S.shared[msg.f], null) : cached("t:" + msg.f, S.entities.players?.[msg.f]?.t, null);
+  const charged = v && v.m === m.id ? Math.floor((v.p || 0) / CONFIG.spellEvery) : 0, key = m.id + ":" + msg.f, n = (spellsIn.get(key) || 0) + 1;
+  if (n > charged) return false;
+  spellsIn.set(key, n);
+  return true;
 }
 /** Everyone runs this for every spell: hit my tower (and, as host, the bots'), show the banner. */
 function spellLanded(m, msg) {
@@ -941,7 +953,7 @@ function frame(now) {
   net.onState((st) => { S = st; });
   net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
   net.onReconnect(() => { dropped = false; });
-  net.on("spell", (msg, from) => { if (msg && typeof msg === "object") spellLanded(match(), { k: String(msg.k), f: String(msg.f || from), m: msg.m, d: msg.d < 0 ? -1 : 1 }); });
+  net.on("spell", (msg, from) => { if (!msg || typeof msg !== "object") return; const s = { k: String(msg.k), f: String(msg.f || from), m: msg.m, d: msg.d < 0 ? -1 : 1 }; if (spellOk(match(), s, from)) spellLanded(match(), s); });
   net.on("ready", (msg, from) => { if (isHost()) onReady(from); });
   if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
   const taken = new Set([...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c), ...(match()?.bots || []).map((b) => b.c)]);
